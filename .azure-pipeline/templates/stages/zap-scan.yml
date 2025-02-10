@@ -1,0 +1,158 @@
+parameters:
+  - name: zap_clusterName
+    type: string
+
+  - name: zap_resourceGroup
+    type: string
+
+  - name: zap_scanUrl
+    type: string
+
+  - name: zap_nameSpace
+    type: string
+
+  - name: zap_scanType
+    type: string
+
+  - name: wso2_client_credentials
+    type: string
+
+  - name: wso2_token_endpoint
+    type: string
+
+  - name: target_endpoint
+    type: string
+
+stages:
+  - stage: Scan
+    pool:
+      name: $(agentPool)
+      demands:
+        - Agent.Name -equals $(agentType)-$(Build.BuildId)
+    jobs:
+      - job: Scan
+        displayName: ZAP scan
+        variables:
+          # This file has a placeholder `<WSO2_ACCESS_TOKEN>`. Pipeline have to overwrite it with fetched token.
+          zap_deployment_file: $(System.DefaultWorkingDirectory)/Backend-Project-Template/.azure-pipeline/assets/zap-deployment.yaml
+
+          # This file will be generated in `openapi-specification` repo.
+          openapi_spec_output_file: $(System.DefaultWorkingDirectory)/openapi-specification/_build/openapi.yaml
+
+          # The path to `openapi.yaml` file in a ZAP pod.
+          openapi_spec_destination_file: /zap/openapi.yaml
+        steps:
+          - checkout: self
+          - checkout: OpenAPISpecificationRepo
+
+          - task: AzureCLI@2
+            inputs:
+              azureSubscription: 'JERADevOps'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: 'az aks get-credentials --name ${{ parameters.zap_clusterName }} --resource-group ${{ parameters.zap_resourceGroup }} --admin'
+
+          - task: Bash@3
+            displayName: Put WSO2 access token into deployment
+            inputs:
+              targetType: 'inline'
+              script: |
+                WSO2_ACCESS_TOKEN=`curl -k -X POST ${{ parameters.wso2_token_endpoint }} -d "grant_type=client_credentials" \
+                  -H"Authorization: Basic ${{ parameters.wso2_client_credentials }}" \
+                  | jq -r .access_token`
+                # Replaces a placeholder with fetched token above.
+                sed -i -e "s/<WSO2_ACCESS_TOKEN>/$WSO2_ACCESS_TOKEN/" $(zap_deployment_file)
+
+          - task: Bash@3
+            displayName: Apply deployment
+            inputs:
+              targetType: 'inline'
+              script: |
+                kubectl delete deploy zap -n ${{ parameters.zap_nameSpace }} --force --grace-period=0 --wait=true
+                echo "Waiting for a pod to be deleted..."
+                kubectl wait pod -n ${{ parameters.zap_nameSpace }} -l app=zap --for=delete --timeout 120s
+                kubectl apply -f $(zap_deployment_file) -n ${{ parameters.zap_nameSpace }} --wait=true
+
+          - task: Bash@3
+            displayName: Get the pod name
+            inputs:
+              targetType: 'inline'
+              script: |
+                POD=$(kubectl get pods -n ${{ parameters.zap_nameSpace }} -l app=zap --sort-by=.metadata.creationTimestamp -o jsonpath="{.items[-1].metadata.name}")
+                echo $POD
+
+          - task: Bash@3
+            displayName: Wait for the pod to be ready
+            inputs:
+              targetType: 'inline'
+              script: |
+                # This is a loop to avoid a time gap between "kubectl apply" and "when the pod is created".
+                while true
+                do
+                  echo "Waiting for a pod to be ready..."
+                  kubectl wait pod -n ${{ parameters.zap_nameSpace }} -l app=zap --for condition=ready --timeout 120s && break
+                  sleep 1
+                done
+
+          - task: Bash@3
+            displayName: Validate the pod status
+            inputs:
+              targetType: 'inline'
+              script: |
+                POD=$(kubectl get pods -n ${{ parameters.zap_nameSpace }} -l app=zap --sort-by=.metadata.creationTimestamp -o jsonpath="{.items[-1].metadata.name}")
+                STATUS=$(kubectl get pods $POD --no-headers -o custom-columns=":status.phase" -n ${{ parameters.zap_nameSpace }})
+                echo "Status: $STATUS"
+                if [[ $STATUS == "Running"  ]]; then
+                  echo "ZAP server pod is deployed successfully"
+                else
+                  echo "ZAP server pod deployment failed"
+                  exit 1
+                fi
+
+          - task: Bash@3
+            displayName: Generate openapi.yaml
+            inputs:
+              targetType: 'inline'
+              script: |
+                cd openapi-specification
+                npm i && npm run build
+                ls -l $(openapi_spec_output_file)
+
+          - script: |
+              echo [before]
+              echo "$(cat $(openapi_spec_output_file))" | head -n 10
+              # Using `|` as a delimiter for escaping `/` in URL.
+              sed -i -e "s|^\(\s*-\s*url:\s*\).*\$|\1${{ parameters.target_endpoint }}|" $(openapi_spec_output_file)
+              echo [after]
+              echo "$(cat $(openapi_spec_output_file))" | head -n 10
+            displayName: Replace `servers.url` with the target endpoint
+
+          - task: Bash@3
+            displayName: Copy openapi.yaml into POD
+            inputs:
+              targetType: 'inline'
+              script: |
+                POD=$(kubectl get pods -n ${{ parameters.zap_nameSpace }} -l app=zap --sort-by=.metadata.creationTimestamp -o jsonpath="{.items[-1].metadata.name}")
+                echo $POD
+                cat $(openapi_spec_output_file)
+                kubectl cp $(openapi_spec_output_file) ${{ parameters.zap_nameSpace }}/$POD:$(openapi_spec_destination_file)
+                kubectl exec -it $POD -n ${{ parameters.zap_nameSpace }} -- ls -l $(openapi_spec_destination_file)
+
+          - task: Bash@3
+            displayName: Exec into POD and Display report
+            inputs:
+              targetType: 'inline'
+              script: |
+                POD=$(kubectl get pods -n ${{ parameters.zap_nameSpace }} -l app=zap --sort-by=.metadata.creationTimestamp -o jsonpath="{.items[-1].metadata.name}")
+                echo $POD
+                kubectl exec -it $POD -n ${{ parameters.zap_nameSpace }} -- /bin/sh -c "${{ parameters.zap_scanType }} -t $(openapi_spec_destination_file) -f openapi > OWASP-ZAP-Report.xml;"
+                sleep 60
+                kubectl exec -i $POD -n ${{ parameters.zap_nameSpace }} -- /bin/sh -c "cat OWASP-ZAP-Report.xml" > report.xml
+
+          - task: CmdLine@2
+            displayName: Display report content
+            inputs:
+              script: |
+                ls -la .
+                echo report.xml:
+                echo "$(cat report.xml)"

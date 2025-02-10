@@ -1,0 +1,28 @@
+name: Deploy_Request
+
+trigger: none
+pr: none
+
+parameters:
+  - name: environment
+    type: string
+    default: development
+    values:
+      - development
+      - staging
+      - production
+
+pool:
+  vmImage: 'Ubuntu-latest'
+
+stages:
+- stage: deploy
+  jobs:
+  - deployment: Deploy
+    displayName: Deploying ${{ parameters.environment }}
+    environment: ${{ parameters.environment }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - script: echo "Deployment Approved"

@@ -1,0 +1,13 @@
+{
+  "extends": "@tsconfig/node-lts-strictest-esm/tsconfig.json",
+  "compilerOptions": {
+    "outDir": "_build",                         /* Redirect output structure to the directory. */
+    "experimentalDecorators": true,
+    "resolveJsonModule": true,
+    "module": "commonjs",                       /* Transpile CommonJS but targets ESM. This need to use `node` without esm loader. */
+    "emitDecoratorMetadata": true,
+    "importsNotUsedAsValues": "remove",
+  },
+  "include": ["src", "index.ts"],
+  "exclude": ["node_modules", "lint-staged.config.js"]
+}

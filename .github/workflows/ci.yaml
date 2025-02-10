@@ -1,0 +1,282 @@
+name: CI
+
+permissions:
+  id-token: write
+  contents: read
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-rc*"
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+jobs:
+  build:
+    runs-on: ["cfe"]
+    environment: build
+    outputs:
+      az_subscription_id: ${{ steps.setenv.outputs.az_subscription_id }}
+      docker_tag: ${{ steps.setenv.outputs.docker_tag }}
+      environment: ${{ steps.setenv.outputs.environment }}
+      environment_display: ${{ steps.setenv.outputs.environment_display }}
+      release_repo: ${{ steps.setenv.outputs.release_repo }}
+      kustomize_folder: ${{ steps.setenv.outputs.kustomize_folder }}
+      wso2_keyvault_name: ${{ steps.setenv.outputs.wso2_keyvault_name }}
+      envFile: ${{ steps.setenv.outputs.envFile}}
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/cache@v3
+        id: docker-cache
+        with:
+          path: |
+            /var/lib/docker
+          key: ${{ runner.os }}-docker-${{ hashFiles('package-lock.json', 'Dockerfile') }}
+          restore-keys: |
+            ${{ runner.os }}-docker-
+
+      - uses: actions/github-script@v6
+        name: Set environment
+        id: setenv
+        env:
+          IS_DEV: ${{ github.ref_type == 'branch' && github.ref_name == 'main' }}
+          IS_STAGING: ${{ github.ref_type == 'tag' && contains(github.ref_name, '-rc') }}
+          IS_PROD: ${{ github.ref_type == 'tag' && !contains(github.ref_name, '-rc') }}
+        with:
+          script: |
+            const {
+              IS_DEV,
+              IS_STAGING,
+              IS_PROD,
+            } = process.env
+
+            const fs = require('node:fs')
+            let appVars = undefined
+            const varsObj = ${{ toJSON(vars) }}
+
+            /**
+             * Selects GitHub Variables with name suffixed (i.e: _DEV, _STG, _PRD) and ignore name prefixed with 'GHA_'.
+             */
+            selectVarsBy = (obj, envName) =>
+              Object.entries(obj)
+              .filter(([key, _]) => !key.startsWith('GHA_') && key.endsWith(envName))
+              .map(([key, val]) => [key.slice(0, -envName.length), val])
+
+
+            const stringToBool = (s) => s.toLowerCase() === "true"
+
+            if (stringToBool(IS_DEV)) {
+              core.setOutput("az_subscription_id", "${{ vars.GHA_AZ_SUBSCRIPTION_ID_DEV }}")
+              core.setOutput("environment", "development")
+              core.setOutput("environment_display", "Dev")
+              core.setOutput("release_repo", "${{ vars.GHA_RELEASE_REPO_DEV }}")
+              core.setOutput("kustomize_folder", "clusters/dev/apps/live/${{ vars.GHA_PROJECT_DIR }}")
+              core.setOutput("acr_name", "${{ vars.GHA_REGISTRY_NAME_DEV }}")
+              core.setOutput("docker_tag", `${{ vars.GHA_REGISTRY_NAME_DEV }}.${{ vars.GHA_REGISTRY_DOMAIN }}/${{ vars.GHA_IMAGE_NAME }}:${{ github.sha }}`)
+              core.setOutput("wso2_keyvault_name", "${{ vars.GHA_WSO2_KEYVAULT_DEV }}")
+              appVars = selectVarsBy(varsObj, '_DEV')
+              console.log("set development environment")
+            } else if (stringToBool(IS_STAGING)) {
+              core.setOutput("az_subscription_id", "${{ vars.GHA_AZ_SUBSCRIPTION_ID_STG }}")
+              core.setOutput("environment", "staging")
+              core.setOutput("environment_display", "Staging")
+              core.setOutput("release_repo", "${{ vars.GHA_RELEASE_REPO_STG }}")
+              core.setOutput("kustomize_folder", "clusters/stg/apps/live/${{ vars.GHA_PROJECT_DIR }}")
+              core.setOutput("acr_name", "${{ vars.GHA_REGISTRY_NAME_STG }}")
+              core.setOutput("docker_tag", `${{ vars.GHA_REGISTRY_NAME_STG }}.${{ vars.GHA_REGISTRY_DOMAIN }}/${{ vars.GHA_IMAGE_NAME }}:${{ github.ref_name }}`)
+              core.setOutput("wso2_keyvault_name", "${{ vars.GHA_WSO2_KEYVAULT_STG }}")
+              appVars = selectVarsBy(varsObj, '_STG')
+              console.log("set staging environment")
+            } else if (stringToBool(IS_PROD)) {
+              core.setOutput("az_subscription_id", "${{ vars.GHA_AZ_SUBSCRIPTION_ID_PRD }}")
+              core.setOutput("environment", "production")
+              core.setOutput("environment_display", "Production")
+              core.setOutput("release_repo", "${{ vars.GHA_RELEASE_REPO_PRD }}")
+              core.setOutput("kustomize_folder", "clusters/prod/apps/live/${{ vars.GHA_PROJECT_DIR }}")
+              core.setOutput("acr_name", "${{ vars.GHA_REGISTRY_NAME_PRD }}")
+              core.setOutput("docker_tag", `${{ vars.GHA_REGISTRY_NAME_PRD }}.${{ vars.GHA_REGISTRY_DOMAIN }}/${{ vars.GHA_IMAGE_NAME }}:${{ github.ref_name }}`)
+              core.setOutput("wso2_keyvault_name", "${{ vars.GHA_WSO2_KEYVAULT_PRD }}")
+              appVars = selectVarsBy(varsObj, '_PRD')
+              console.log("set prod environment")
+            } else {
+              console.error("Unexcpected environment")
+              process.exit(1)
+            }
+
+            const mergedEntries = [ ...selectVarsBy(varsObj, '_GLOBAL'), ...appVars ]
+            const file = mergedEntries.map(o => o.join('=')).join('\n')
+            const fileBase64 = Buffer.from(file).toString('base64')
+            core.setOutput("envFile", fileBase64)
+
+            console.log('APP public config variable:')
+            console.log(JSON.stringify(mergedEntries, null, 2))
+
+      - name: Azure CLI Version
+        run: |
+          az account clear
+          az version
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          client-id: ${{ vars.GHA_AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.GHA_AZ_TENANT_ID }}
+          subscription-id: ${{ steps.setenv.outputs.az_subscription_id }}
+
+      - name: ACR Login - ${{ steps.setenv.outputs.acr_name }}
+        run: az acr login -n ${{ steps.setenv.outputs.acr_name }}
+
+      - name: Build and Pushing Docker Image
+        id: docker_build
+        run: |
+          DOCKER_BUILDKIT=1 docker build --target builder -t ${{ steps.setenv.outputs.docker_tag }} .
+          docker push ${{ steps.setenv.outputs.docker_tag }}
+
+  request_deployment_approval:
+    needs: ["build"]
+    environment: "build"
+    runs-on: ["cfe"]
+    if: needs.build.outputs.environment == 'production'
+    steps:
+      - uses: actions/checkout@v3
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          client-id: ${{ vars.GHA_AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.GHA_AZ_TENANT_ID }}
+          subscription-id: ${{ needs.build.outputs.az_subscription_id }}
+
+      - name: Load PATs from ${{ vars.GHA_PAT_KEYVAULT }}
+        uses: Azure/get-keyvault-secrets@v1
+        with:
+          keyvault: ${{ vars.GHA_PAT_KEYVAULT }}
+          secrets: ${{ vars.GHA_PAT_KEYVAULT_KEYS }} # comma separated list of secret keys that need to be fetched from the Key Vault
+        id: pats
+
+      - name: "Deployment Approval Request"
+        uses: ./.github/actions/az-devops-approval-request
+        id: deployment_approval
+        env:
+          AZURE_DEVOPS_EXT_PAT: ${{ env.AZDO-PAT}}
+        with:
+          project: ${{ vars.GHA_AZ_DEVOPS_PROJ }}
+          org: ${{ vars.GHA_AZ_DEVOPS_ORG }}
+          branch: ${{ vars.GHA_AZ_DEVOPS_BRANCH }}
+          pipeline_name: ${{ vars.GHA_AZ_DEVOPS_APPROVAL_PIPELINE_NAME }}
+          environment: ${{ needs.build.outputs.environment }}
+
+  release:
+    runs-on: ["cfe"]
+    needs: ["build", "request_deployment_approval"]
+    if: ${{ !failure() && !cancelled() }}
+    environment:
+      name: ${{ needs.build.outputs.environment }}
+    env:
+      GITHUB_SA_USER: jeraoss
+      GITHUB_SA_EMAIL: opensource@jera.co.jp
+      ENV_FILEPATH: ./envs/config.env
+    steps:
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          client-id: ${{ vars.GHA_AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.GHA_AZ_TENANT_ID }}
+          subscription-id: ${{ needs.build.outputs.az_subscription_id }}
+
+      - name: Load PATs from ${{ vars.GHA_PAT_KEYVAULT }}
+        uses: Azure/get-keyvault-secrets@v1
+        with:
+          keyvault: ${{ vars.GHA_PAT_KEYVAULT }}
+          secrets: ${{ vars.GHA_PAT_KEYVAULT_KEYS }} # comma separated list of secret keys that need to be fetched from the Key Vault
+        id: pats
+
+      - uses: actions/checkout@v3
+        with:
+          repository: ${{ needs.build.outputs.release_repo }}
+          ref: main
+          token: ${{ env.GITHUB-PAT }}
+
+      - uses: actions/github-script@v6
+        name: Set environment
+        id: setenv
+        with:
+          script: |
+            const fs = require('node:fs')
+            const file = Buffer.from("${{ needs.build.outputs.envFile }}", 'base64').toString('ascii')
+            fs.writeFileSync("${{ needs.build.outputs.kustomize_folder }}/${{ env.ENV_FILEPATH }}", file, { encoding: 'utf8' })
+
+      - run: |
+          git config user.name "${{ env.GITHUB_SA_USER }}"
+          git config user.email "${{ env.GITHUB_SA_EMAIL }}"
+
+      - uses: imranismail/setup-kustomize@v2
+      - name: ${{ needs.build.outputs.environment_display }}
+        run: |
+          echo "Tag: ${{ needs.build.outputs.docker_tag }}"
+          kustomize edit set image ${{ needs.build.outputs.docker_tag }}
+          git add .
+          git commit -m "Pushing to ${{ needs.build.outputs.environment }} ${{ needs.build.outputs.docker_tag }}"
+
+          # https://github.com/jeraoss/kubernetes-deployment-manifest/blob/experimental/rebase_and_push.sh
+          ../../../../../../rebase_and_push.sh
+        working-directory: ${{ needs.build.outputs.kustomize_folder }}
+
+  wso2-openapi:
+    runs-on: ["cfe"]
+    needs: ["build", "request_deployment_approval"]
+    if: ${{ !failure() && !cancelled() }}
+    environment: build
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/cache@v3
+        id: docker-cache
+        with:
+          path: |
+            /var/lib/docker
+          key: ${{ runner.os }}-docker-${{ hashFiles('yarn.lock', 'Dockerfile') }}
+          restore-keys: |
+            ${{ runner.os }}-docker-
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          client-id: ${{ vars.GHA_AZ_CLIENT_ID }}
+          tenant-id: ${{ vars.GHA_AZ_TENANT_ID }}
+          subscription-id: ${{ needs.build.outputs.az_subscription_id }}
+
+      - name: Load WSO2 ${{ needs.build.outputs.environment }} Key Vault
+        uses: Azure/get-keyvault-secrets@v1
+        with:
+          keyvault: ${{ needs.build.outputs.wso2_keyvault_name }}
+          secrets: ${{ vars.GHA_WSO2_KEYVAULT_KEYS }} # comma separated list of secret keys that need to be fetched from the Key Vault
+        id: wso2_envs
+
+      - name: Generate OpenAPI file
+        id: openapi
+        run: |
+          mkdir docs
+          filepath=docs/_openapi.json
+          DOCKER_BUILDKIT=1 docker build -t openapi --target openapi .
+
+          docker run -i --rm -v ${{ github.workspace }}/docs:/local_tmp openapi cp /usr/src/app/_build/api-docs/_openapi.json /local_tmp
+
+          ls -la $filepath
+          echo "filepath=$filepath" >> "$GITHUB_OUTPUT"
+
+      - name: WSO2 Publisher
+        uses: jeraoss/wso2-api-publisher-action@main
+        with:
+          username: ${{ steps.wso2_envs.outputs.wso2DevopsUser }}
+          password: ${{ steps.wso2_envs.outputs.wso2DevopsPwd }}
+          scope: ${{ steps.wso2_envs.outputs.wso2Scope }}
+          wso2Endpoint: ${{ steps.wso2_envs.outputs.wso2Endpoint }}
+          wso2ApiName: ${{ vars.GHA_WSO2_API_NAME }}
+          wso2Vhost: ${{ steps.wso2_envs.outputs.wso2Vhost }}
+          dcrToken: ${{ steps.wso2_envs.outputs.wso2DcrToken }}
+          openApiFilePath: ${{ steps.openapi.outputs.filepath }}

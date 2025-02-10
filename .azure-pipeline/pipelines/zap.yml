@@ -1,0 +1,24 @@
+resources:
+  repositories:
+    - repository: OpenAPISpecificationRepo
+      name: openapi-specification
+      type: git
+
+variables:
+  - group: pipeline
+  - group: zap
+
+stages:
+  - template: ../templates/stages/prepare.yml
+  - template: ../templates/stages/zap-scan.yml
+    parameters:
+      zap_clusterName: $(zap_clusterName)
+      zap_resourceGroup: $(zap_resourceGroup)
+      zap_scanUrl: $(zap_scanUrl)
+      zap_nameSpace: $(zap_nameSpace)
+      zap_scanType: $(zap_scanType)
+      wso2_client_credentials: $(WSO2_CLIENT_CREDENTIALS)
+      wso2_token_endpoint: $(WSO2_TOKEN_ENDPOINT)
+      target_endpoint: $(TARGET_ENDPOINT)
+
+  - template: ../templates/stages/cleanup.yml

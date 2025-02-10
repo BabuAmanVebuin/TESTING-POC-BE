@@ -1,0 +1,5 @@
+CreateTaskRequest:
+  $ref: ./schemas/CreateTaskRequest.yaml
+
+UpdateTaskRequest:
+  $ref: ./schemas/UpdateTaskRequest.yaml

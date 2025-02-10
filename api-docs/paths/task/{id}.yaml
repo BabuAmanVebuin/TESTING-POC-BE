@@ -1,0 +1,21 @@
+get:
+  tags:
+    - TODO tasks management
+  summary: Find a task by ID
+  parameters:
+    - $ref: ../../_parameters.yaml#/FindTaskByIdRequest
+  responses:
+    200:
+      description: Found a task with given ID.
+    404:
+      description: Not found a task with given ID.
+
+delete:
+  tags:
+    - TODO tasks management
+  summary: Delete a task
+  parameters:
+    - $ref: ../../_parameters.yaml#/FindTaskByIdRequest
+  responses:
+    200:
+      description: Successfully deleted a task.

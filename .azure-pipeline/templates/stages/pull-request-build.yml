@@ -1,0 +1,38 @@
+parameters:
+- name: stage
+  type: string
+
+stages:
+- stage: Pull Request Build
+  pool:
+    name: $(AGENT_POOL)
+    demands:
+      - Agent.Name -equals $(AGENT_TYPE)-$(Build.BuildId)
+  jobs:
+  - job: Build
+    displayName: Building ${{ parameters.stage }}
+    steps:
+    - checkout: self
+
+    - template: ../steps/set-commit.yml
+
+    - task: YarnInstaller@3
+      displayName: Install Yarn 1.x
+      inputs:
+        versionSpec: '1.x'
+
+    - task: Yarn@3
+      displayName: Install Packages
+      inputs:
+        arguments: 'install'
+
+    - task: Yarn@3
+      displayName: Run Test With Report
+      inputs:
+        arguments: 'test:reporter'
+
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles:  test-report.xml
+        testRunTitle: wot-be:$(TAG)

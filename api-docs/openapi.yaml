@@ -1,0 +1,17 @@
+openapi: 3.0.0
+
+info:
+  version: 1.0.0
+  title: TODO tasks management-test
+
+servers:
+  - url: /
+
+paths:
+  $ref: ./_paths.yaml
+
+components:
+  schemas:
+    $ref: ./_schemas.yaml
+  parameters:
+    $ref: ./_parameters.yaml

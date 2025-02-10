@@ -1,0 +1,46 @@
+trigger: none
+
+schedules:
+  - cron: "0 0 * * Mon"
+    branches:
+      include:
+        - master
+    always: true
+
+parameters:
+  - name: acrDays
+    displayName: Delete images last modified more than N days
+    type: number
+    default: 5 # means 5 bussines days
+  - name: keepNLatests
+    displayName: Keep N latest images
+    type: number
+    default: 3
+  - name: dryRun
+    displayName: Dry run
+    type: boolean
+    default: false
+
+variables:
+  - ${{ if parameters.dryRun }}:
+    - name: displayDryRun
+      value: ' (DRY RUN)'
+    - name: dryRunFlag
+      value: --dry-run
+  - ${{ else }}:
+    - name: displayDryRun
+      value: ''
+    - name: dryRunFlag
+      value: ''
+  - group: pipeline
+
+steps:
+  - task: AzureCLI@2
+    displayName: Purge${{ variables.displayDryRun }} from "$(imageRepository)"
+    inputs:
+      azureSubscription: $(azureSubscription)
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        PURGE_CMD="acr purge --filter '^$(imageRepository):\b([a-z0-9]{10})\b$' --untagged --ago ${{ parameters.acrDays }}d --keep ${{ parameters.keepNLatests }} ${{ variables.dryRunFlag }}"
+        az acr run --cmd "$PURGE_CMD" --registry "$(acrDevRegistryName)" /dev/null

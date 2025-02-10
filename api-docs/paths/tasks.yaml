@@ -1,0 +1,7 @@
+get:
+  tags:
+    - TODO tasks management
+  summary: Find all tasks
+  responses:
+    200:
+      description: Successfully found all tasks.
