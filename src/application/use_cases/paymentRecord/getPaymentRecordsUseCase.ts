@@ -71,7 +71,6 @@ export const getPaymentRecordsUseCase = async (
     console.log('processedRecords', processedRecords)
     return E.right(processedRecords)
   } catch (error) {
-    console.error('Error fetching payment records:', error)
     return E.left(error as ApplicationError)
   }
 }

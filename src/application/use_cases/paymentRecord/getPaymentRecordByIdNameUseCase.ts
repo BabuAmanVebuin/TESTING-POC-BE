@@ -75,7 +75,6 @@ export const getPaymentRecordByIdNameUseCase = async (
 
     return E.right(processedRecord)
   } catch (error) {
-    console.error('Error fetching payment record:', error)
     return E.left(error as ApplicationError)
   }
 }

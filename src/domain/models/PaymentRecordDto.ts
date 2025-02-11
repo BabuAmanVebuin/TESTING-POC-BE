@@ -75,6 +75,30 @@ export class PaymentRecordDto {
   @IsNumber()
   twelfthPayment?: number
 
+  @IsOptional()
+  @IsNumber()
+  quarterlyContribution?: number
+
+  @IsOptional()
+  @IsNumber()
+  halfYearContribution?: number
+
+  @IsOptional()
+  @IsNumber()
+  yearlyContribution?: number
+
+  @IsOptional()
+  @IsNumber()
+  pendingPayment?: number
+
+  @IsOptional()
+  @IsNumber()
+  percentagePaid?: number
+
+  @IsOptional()
+  @IsString()
+  paymentStatus?: string
+
   @CreateDateColumn({ type: 'timestamp' })
   createdAt!: Date
 

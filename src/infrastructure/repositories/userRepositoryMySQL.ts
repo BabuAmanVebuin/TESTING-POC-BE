@@ -22,7 +22,6 @@ export const userRepositoryMySQL = async (
       const userOption = O.fromNullable(result)
       return userOption
     } catch (error) {
-      console.error('❌ Database error in findById:', error)
       return O.none
     }
   },
